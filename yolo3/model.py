@@ -1,123 +1,8 @@
 """YOLO_v3 Model Defined in Keras."""
 
-from functools import wraps
-
 import numpy as np
 import tensorflow as tf
 from keras import backend as K
-from keras.layers import Conv2D, Add, ZeroPadding2D, UpSampling2D, Concatenate, MaxPooling2D
-from keras.layers.advanced_activations import LeakyReLU
-from keras.layers.normalization import BatchNormalization
-from keras.models import Model
-from keras.regularizers import l2
-
-from yolo3.utils import compose
-
-
-@wraps(Conv2D)
-def DarknetConv2D(*args, **kwargs):
-    """Wrapper to set Darknet parameters for Convolution2D."""
-    darknet_conv_kwargs = {'kernel_regularizer': l2(5e-4)}
-    darknet_conv_kwargs['padding'] = 'valid' if kwargs.get('strides')==(2,2) else 'same'
-    darknet_conv_kwargs.update(kwargs)
-    return Conv2D(*args, **darknet_conv_kwargs)
-
-def DarknetConv2D_BN_Leaky(*args, **kwargs):
-    """Darknet Convolution2D followed by BatchNormalization and LeakyReLU."""
-    no_bias_kwargs = {'use_bias': False}
-    no_bias_kwargs.update(kwargs)
-    return compose(
-        DarknetConv2D(*args, **no_bias_kwargs),
-        BatchNormalization(),
-        LeakyReLU(alpha=0.1))
-
-def resblock_body(x, num_filters, num_blocks):
-    '''A series of resblocks starting with a downsampling Convolution2D'''
-    # Darknet uses left and top padding instead of 'same' mode
-    x = ZeroPadding2D(((1,0),(1,0)))(x)
-    x = DarknetConv2D_BN_Leaky(num_filters, (3,3), strides=(2,2))(x)
-    for i in range(num_blocks):
-        y = compose(
-                DarknetConv2D_BN_Leaky(num_filters//2, (1,1)),
-                DarknetConv2D_BN_Leaky(num_filters, (3,3)))(x)
-        x = Add()([x,y])
-    return x
-
-def darknet_body(x):
-    '''Darknent body having 52 Convolution2D layers'''
-    x = DarknetConv2D_BN_Leaky(32, (3,3))(x)
-    x = resblock_body(x, 64, 1)
-    x = resblock_body(x, 128, 2)
-    x = resblock_body(x, 256, 8)
-    x = resblock_body(x, 512, 8)
-    x = resblock_body(x, 1024, 4)
-    return x
-
-def make_last_layers(x, num_filters, out_filters):
-    '''6 Conv2D_BN_Leaky layers followed by a Conv2D_linear layer'''
-    x = compose(
-            DarknetConv2D_BN_Leaky(num_filters, (1,1)),
-            DarknetConv2D_BN_Leaky(num_filters*2, (3,3)),
-            DarknetConv2D_BN_Leaky(num_filters, (1,1)),
-            DarknetConv2D_BN_Leaky(num_filters*2, (3,3)),
-            DarknetConv2D_BN_Leaky(num_filters, (1,1)))(x)
-    y = compose(
-            DarknetConv2D_BN_Leaky(num_filters*2, (3,3)),
-            DarknetConv2D(out_filters, (1,1)))(x)
-    return x, y
-
-
-def yolo_body(inputs, num_anchors, num_classes):
-    """Create YOLO_V3 model CNN body in Keras."""
-    darknet = Model(inputs, darknet_body(inputs))
-    x, y1 = make_last_layers(darknet.output, 512, num_anchors*(num_classes+5))
-
-    x = compose(
-            DarknetConv2D_BN_Leaky(256, (1,1)),
-            UpSampling2D(2))(x)
-    x = Concatenate()([x,darknet.layers[152].output])
-    x, y2 = make_last_layers(x, 256, num_anchors*(num_classes+5))
-
-    x = compose(
-            DarknetConv2D_BN_Leaky(128, (1,1)),
-            UpSampling2D(2))(x)
-    x = Concatenate()([x,darknet.layers[92].output])
-    x, y3 = make_last_layers(x, 128, num_anchors*(num_classes+5))
-
-    return Model(inputs, [y1,y2,y3])
-
-def tiny_yolo_body(inputs, num_anchors, num_classes):
-    '''Create Tiny YOLO_v3 model CNN body in keras.'''
-    x1 = compose(
-            DarknetConv2D_BN_Leaky(16, (3,3)),
-            MaxPooling2D(pool_size=(2,2), strides=(2,2), padding='same'),
-            DarknetConv2D_BN_Leaky(32, (3,3)),
-            MaxPooling2D(pool_size=(2,2), strides=(2,2), padding='same'),
-            DarknetConv2D_BN_Leaky(64, (3,3)),
-            MaxPooling2D(pool_size=(2,2), strides=(2,2), padding='same'),
-            DarknetConv2D_BN_Leaky(128, (3,3)),
-            MaxPooling2D(pool_size=(2,2), strides=(2,2), padding='same'),
-            DarknetConv2D_BN_Leaky(256, (3,3)))(inputs)
-    x2 = compose(
-            MaxPooling2D(pool_size=(2,2), strides=(2,2), padding='same'),
-            DarknetConv2D_BN_Leaky(512, (3,3)),
-            MaxPooling2D(pool_size=(2,2), strides=(1,1), padding='same'),
-            DarknetConv2D_BN_Leaky(1024, (3,3)),
-            DarknetConv2D_BN_Leaky(256, (1,1)))(x1)
-    y1 = compose(
-            DarknetConv2D_BN_Leaky(512, (3,3)),
-            DarknetConv2D(num_anchors*(num_classes+5), (1,1)))(x2)
-
-    x2 = compose(
-            DarknetConv2D_BN_Leaky(128, (1,1)),
-            UpSampling2D(2))(x2)
-    y2 = compose(
-            Concatenate(),
-            DarknetConv2D_BN_Leaky(256, (3,3)),
-            DarknetConv2D(num_anchors*(num_classes+5), (1,1)))([x2,x1])
-
-    return Model(inputs, [y1,y2])
-
 
 def yolo_head(feats, anchors, num_classes, input_shape, calc_loss=False):
     """Convert final layer features to bounding box parameters."""
@@ -174,7 +59,6 @@ def yolo_correct_boxes(box_xy, box_wh, input_shape, image_shape):
 
 
 def yolo_boxes_and_scores(feats, anchors, num_classes, input_shape, image_shape):
-    '''Process Conv layer output'''
     box_xy, box_wh, box_confidence, box_class_probs = yolo_head(feats,
         anchors, num_classes, input_shape)
     boxes = yolo_correct_boxes(box_xy, box_wh, input_shape, image_shape)
@@ -191,7 +75,6 @@ def yolo_eval(yolo_outputs,
               max_boxes=20,
               score_threshold=.6,
               iou_threshold=.5):
-    """Evaluate YOLO model on given input and return filtered boxes."""
     num_layers = len(yolo_outputs)
     anchor_mask = [[6,7,8], [3,4,5], [0,1,2]] if num_layers==3 else [[3,4,5], [1,2,3]] # default setting
     input_shape = K.shape(yolo_outputs[0])[1:3] * 32
@@ -230,21 +113,6 @@ def yolo_eval(yolo_outputs,
 
 
 def preprocess_true_boxes(true_boxes, input_shape, anchors, num_classes):
-    '''Preprocess true boxes to training input format
-
-    Parameters
-    ----------
-    true_boxes: array, shape=(m, T, 5)
-        Absolute x_min, y_min, x_max, y_max, class_id relative to input_shape.
-    input_shape: array-like, hw, multiples of 32
-    anchors: array, shape=(N, 2), wh
-    num_classes: integer
-
-    Returns
-    -------
-    y_true: list of array, shape like yolo_outputs, xywh are reletive value
-
-    '''
     assert (true_boxes[..., 4]<num_classes).all(), 'class id must be less than num_classes'
     num_layers = len(anchors)//3 # default setting
     anchor_mask = [[6,7,8], [3,4,5], [0,1,2]] if num_layers==3 else [[3,4,5], [1,2,3]]
@@ -302,19 +170,6 @@ def preprocess_true_boxes(true_boxes, input_shape, anchors, num_classes):
 
 
 def box_iou(b1, b2):
-    '''Return iou tensor
-
-    Parameters
-    ----------
-    b1: tensor, shape=(i1,...,iN, 4), xywh
-    b2: tensor, shape=(j, 4), xywh
-
-    Returns
-    -------
-    iou: tensor, shape=(i1,...,iN, j)
-
-    '''
-
     # Expand dim to apply broadcasting.
     b1 = K.expand_dims(b1, -2)
     b1_xy = b1[..., :2]
@@ -343,21 +198,6 @@ def box_iou(b1, b2):
 
 
 def yolo_loss(args, anchors, num_classes, ignore_thresh=.5, print_loss=False):
-    '''Return yolo_loss tensor
-
-    Parameters
-    ----------
-    yolo_outputs: list of tensor, the output of yolo_body or tiny_yolo_body
-    y_true: list of array, the output of preprocess_true_boxes
-    anchors: array, shape=(N, 2), wh
-    num_classes: integer
-    ignore_thresh: float, the iou threshold whether to ignore object confidence loss
-
-    Returns
-    -------
-    loss: tensor, shape=(1,)
-
-    '''
     num_layers = len(anchors)//3 # default setting
     yolo_outputs = args[:num_layers]
     y_true = args[num_layers:]
